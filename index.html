@@ -35,6 +35,8 @@
             const [status, setStatus] = useState('Disconnected');
             const [progress, setProgress] = useState(0);
             const [transferStats, setTransferStats] = useState(null);
+            const [transferSpeed, setTransferSpeed] = useState('');
+            const [timeRemaining, setTimeRemaining] = useState('');
 
             const pc = useRef(null);
             const dc = useRef(null);
@@ -42,6 +44,12 @@
             const receiveBuffer = useRef([]);
             const receivedSize = useRef(0);
             const fileMeta = useRef(null);
+
+            const writableStream = useRef(null);
+            const writeQueue = useRef([]);
+            const isWriting = useRef(false);
+            const resolveReadyObj = useRef(null);
+            const transferStartTime = useRef(null);
 
             const initWebRTC = () => {
                 const configuration = {
@@ -148,53 +156,144 @@
                 }
             };
 
+            const processWriteQueue = async () => {
+                if (isWriting.current || writeQueue.current.length === 0) return;
+                isWriting.current = true;
+                
+                const chunk = writeQueue.current.shift();
+                try {
+                    if (writableStream.current) {
+                        await writableStream.current.write(chunk);
+                    }
+                } catch (err) {
+                    console.error("Write error", err);
+                }
+                
+                isWriting.current = false;
+                if (writeQueue.current.length > 0) processWriteQueue();
+            };
+
+            const updateTransferStats = (currentBytes, totalBytes) => {
+                const elapsedSecs = (Date.now() - transferStartTime.current) / 1000;
+                if (elapsedSecs > 1) {
+                    const speedBps = currentBytes / elapsedSecs;
+                    const mbps = (speedBps / (1024 * 1024)).toFixed(2);
+                    setTransferSpeed(`${mbps} MB/s`);
+                    
+                    const bytesRemaining = totalBytes - currentBytes;
+                    const secondsRemaining = bytesRemaining / speedBps;
+                    
+                    if (secondsRemaining > 60) {
+                        const mins = Math.floor(secondsRemaining / 60);
+                        const secs = Math.floor(secondsRemaining % 60);
+                        setTimeRemaining(`${mins}m ${secs}s left`);
+                    } else if (secondsRemaining >= 0) {
+                        setTimeRemaining(`${Math.ceil(secondsRemaining)}s left`);
+                    }
+                }
+            };
+
             const setupDataChannel = (channel) => {
                 channel.onopen = () => setStatus('Connected! Ready to transfer.');
                 channel.onclose = () => setStatus('Connection closed.');
                 channel.onerror = (err) => console.error("DataChannel error:", err);
 
-                channel.onmessage = (e) => {
+                channel.onmessage = async (e) => {
                     if (typeof e.data === 'string') {
                         const msg = JSON.parse(e.data);
+                        
+                        if (msg.type === 'ready' && resolveReadyObj.current) {
+                            resolveReadyObj.current(true);
+                            return;
+                        }
+                        
+                        if (msg.type === 'cancel' && resolveReadyObj.current) {
+                            resolveReadyObj.current(false);
+                            return;
+                        }
+
                         if (msg.type === 'meta') {
                             fileMeta.current = msg;
                             receiveBuffer.current = [];
                             receivedSize.current = 0;
+                            writeQueue.current = [];
+                            isWriting.current = false;
                             setProgress(0);
-                            setTransferStats(`Receiving: ${msg.name}`);
+                            setTransferSpeed('');
+                            setTimeRemaining('');
+                            setTransferStats(`Waiting for file save location...`);
+                            transferStartTime.current = Date.now();
+
+                            try {
+                                if (window.showSaveFilePicker) {
+                                    const handle = await window.showSaveFilePicker({ suggestedName: msg.name });
+                                    writableStream.current = await handle.createWritable();
+                                } else {
+                                    console.warn("File System Access API not supported. Falling back to RAM buffer.");
+                                    writableStream.current = null;
+                                }
+                                setTransferStats(`Receiving: ${msg.name}`);
+                                channel.send(JSON.stringify({ type: 'ready' }));
+                            } catch (err) {
+                                if (err.name === 'AbortError') {
+                                    setTransferStats('Transfer cancelled by user.');
+                                    channel.send(JSON.stringify({ type: 'cancel' }));
+                                } else {
+                                    console.error('File picker error:', err);
+                                    channel.send(JSON.stringify({ type: 'cancel' }));
+                                }
+                            }
+
                         } else if (msg.type === 'end') {
-                            const blob = new Blob(receiveBuffer.current, { type: fileMeta.current.mime });
-                            const url = URL.createObjectURL(blob);
-
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = fileMeta.current.name;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-
-                            setTransferStats(`Completed: ${fileMeta.current.name}`);
-                            setTimeout(() => setProgress(0), 2000);
+                            if (writableStream.current) {
+                                const flushInterval = setInterval(async () => {
+                                    if (writeQueue.current.length === 0 && !isWriting.current) {
+                                        clearInterval(flushInterval);
+                                        await writableStream.current.close();
+                                        writableStream.current = null;
+                                        setTransferSpeed('');
+                                        setTimeRemaining('');
+                                        setTransferStats(`Completed & Saved: ${fileMeta.current.name}`);
+                                        setTimeout(() => setProgress(0), 2000);
+                                    }
+                                }, 100);
+                            } else {
+                                const blob = new Blob(receiveBuffer.current, { type: fileMeta.current.mime });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = fileMeta.current.name;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                URL.revokeObjectURL(url);
+                                setTransferSpeed('');
+                                setTimeRemaining('');
+                                setTransferStats(`Completed: ${fileMeta.current.name}`);
+                                setTimeout(() => setProgress(0), 2000);
+                            }
                         }
                     } else {
-                        receiveBuffer.current.push(e.data);
                         receivedSize.current += e.data.byteLength;
                         const currentProgress = (receivedSize.current / fileMeta.current.size) * 100;
                         setProgress(currentProgress);
+                        updateTransferStats(receivedSize.current, fileMeta.current.size);
+
+                        if (writableStream.current) {
+                            writeQueue.current.push(e.data);
+                            processWriteQueue();
+                        } else {
+                            receiveBuffer.current.push(e.data);
+                        }
                     }
                 };
             };
 
-            const sendFile = (file) => {
+            const sendFile = async (file) => {
                 if (!dc.current || dc.current.readyState !== 'open') {
                     alert('Connection is not ready.');
                     return;
                 }
-
-                const chunkSize = 16384;
-                let offset = 0;
-                fileReader.current = new FileReader();
 
                 dc.current.send(JSON.stringify({
                     type: 'meta',
@@ -203,8 +302,29 @@
                     mime: file.type
                 }));
 
+                setTransferStats(`Waiting for receiver to choose location...`);
+                
+                const isReady = await new Promise((resolve) => {
+                    resolveReadyObj.current = resolve;
+                });
+                
+                resolveReadyObj.current = null;
+
+                if (!isReady) {
+                    setTransferStats(`Transfer was cancelled.`);
+                    return;
+                }
+
+                transferStartTime.current = Date.now();
                 setTransferStats(`Sending: ${file.name}`);
-                dc.current.bufferedAmountLowThreshold = 65536;
+                setTransferSpeed('');
+                setTimeRemaining('');
+                
+                const chunkSize = 16384;
+                let offset = 0;
+                fileReader.current = new FileReader();
+
+                dc.current.bufferedAmountLowThreshold = 1024 * 64;
 
                 const readNextChunk = () => {
                     const slice = file.slice(offset, offset + chunkSize);
@@ -227,11 +347,14 @@
                         dc.current.send(data);
                         offset += data.byteLength;
                         setProgress((offset / file.size) * 100);
+                        updateTransferStats(offset, file.size);
 
                         if (offset < file.size) {
                             readNextChunk();
                         } else {
                             dc.current.send(JSON.stringify({ type: 'end' }));
+                            setTransferSpeed('');
+                            setTimeRemaining('');
                             setTransferStats(`Sent successfully: ${file.name}`);
                             setTimeout(() => setProgress(0), 2000);
                         }
@@ -246,7 +369,13 @@
 
             const handleFileUpload = (e) => {
                 const file = e.target.files[0];
-                if (file) sendFile(file);
+                if (file) {
+                    setProgress(0);
+                    setTransferSpeed('');
+                    setTimeRemaining('');
+                    sendFile(file);
+                    e.target.value = '';
+                }
             };
 
             const copyToClipboard = (text) => {
@@ -274,6 +403,8 @@
                 setStatus('Disconnected');
                 setProgress(0);
                 setTransferStats(null);
+                setTransferSpeed('');
+                setTimeRemaining('');
             };
 
             return (
@@ -460,15 +591,23 @@
                                         <div className="mt-6 p-8 border-2 border-dashed border-slate-600 bg-slate-900 rounded-2xl flex flex-col items-center">
                                             <i className="ph ph-download-simple text-4xl text-slate-400 mb-3 animate-bounce"></i>
                                             <span className="font-medium">Waiting for files...</span>
-                                            <span className="text-xs text-slate-500 mt-1">Files will download automatically</span>
+                                            <span className="text-xs text-slate-500 mt-1">Files will prompt to download automatically</span>
                                         </div>
                                     )}
 
                                     {transferStats && (
-                                        <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 mt-4 text-sm flex items-center gap-3 text-left">
-                                            <i className="ph ph-file text-xl text-blue-400 shrink-0"></i>
-                                            <div className="truncate flex-1 font-medium">{transferStats}</div>
-                                            {progress > 0 && <div className="text-xs text-blue-400 font-mono">{Math.round(progress)}%</div>}
+                                        <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 mt-4 text-sm flex flex-col gap-2 text-left">
+                                            <div className="flex items-center gap-3">
+                                                <i className="ph ph-file text-xl text-blue-400 shrink-0"></i>
+                                                <div className="truncate flex-1 font-medium">{transferStats}</div>
+                                                {progress > 0 && <div className="text-xs text-blue-400 font-mono">{Math.round(progress)}%</div>}
+                                            </div>
+                                            {(transferSpeed || timeRemaining) && (
+                                                <div className="flex items-center justify-between text-xs text-slate-400 px-8 opacity-80">
+                                                    <span>{transferSpeed}</span>
+                                                    <span>{timeRemaining}</span>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
 
