@@ -36,10 +36,13 @@
 
         const Scanner = ({ onScan, onCancel }) => {
             useEffect(() => {
-                const scanner = new Html5Qrcode("reader");
+                const scanner = new Html5Qrcode("reader", { formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE] });
                 scanner.start(
                     { facingMode: "environment" },
-                    { fps: 10 },
+                    { 
+                        fps: 10,
+                        qrbox: { width: 250, height: 250 }
+                    },
                     (text) => {
                         scanner.stop().then(() => onScan(text)).catch(console.error);
                     },
@@ -58,8 +61,8 @@
 
             return (
                 <div className="w-full flex flex-col items-center relative">
-                    <div id="reader" className="w-full bg-black rounded-xl overflow-hidden shadow-inner min-h-[300px] flex items-center justify-center border border-slate-700">
-                        <span className="text-slate-500 text-sm animate-pulse">Initializing Camera...</span>
+                    <div id="reader" className="w-full bg-black rounded-xl overflow-hidden shadow-inner flex items-center justify-center border border-slate-700 min-h-[300px]">
+                        <span className="text-slate-500 text-sm animate-pulse p-12">Target QR inside box...</span>
                     </div>
                     {onCancel && (
                         <button onClick={onCancel} className="mt-4 px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
@@ -154,7 +157,7 @@
                 const token = encodeToken(pc.current.localDescription);
                 setLocalCode(token);
                 QRCode.toDataURL(token, { 
-                    errorCorrectionLevel: 'L',
+                    errorCorrectionLevel: 'M',
                     width: 400, 
                     margin: 2, 
                     color: { dark: '#1e293b', light: '#ffffff' } 
@@ -202,7 +205,7 @@
                     const token = encodeToken(pc.current.localDescription);
                     setLocalCode(token);
                     QRCode.toDataURL(token, { 
-                        errorCorrectionLevel: 'L',
+                        errorCorrectionLevel: 'M',
                         width: 400, 
                         margin: 2, 
                         color: { dark: '#1e293b', light: '#ffffff' } 
