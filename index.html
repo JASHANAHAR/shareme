@@ -31,7 +31,22 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        const encodeToken = (desc) => LZString.compressToBase64(JSON.stringify(desc));
+        const minifySDP = (sdp) => {
+            if (!sdp) return '';
+            return sdp.split('\n').filter(line => {
+                if (line.startsWith('a=candidate')) {
+                    if (!line.includes('typ host')) return false;
+                    if (line.includes('.local')) return false;
+                    if ((line.match(/:/g) || []).length > 2) return false;
+                }
+                return true;
+            }).join('\n');
+        };
+
+        const encodeToken = (desc) => {
+            const optimized = { type: desc.type, sdp: minifySDP(desc.sdp) };
+            return LZString.compressToBase64(JSON.stringify(optimized));
+        };
         const decodeToken = (token) => JSON.parse(LZString.decompressFromBase64(token));
 
         const Scanner = ({ onScan, onCancel }) => {
