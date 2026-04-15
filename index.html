@@ -37,6 +37,7 @@
             const [transferStats, setTransferStats] = useState(null);
             const [transferSpeed, setTransferSpeed] = useState('');
             const [timeRemaining, setTimeRemaining] = useState('');
+            const [incomingFile, setIncomingFile] = useState(null);
 
             const pc = useRef(null);
             const dc = useRef(null);
@@ -214,36 +215,8 @@
 
                         if (msg.type === 'meta') {
                             fileMeta.current = msg;
-                            receiveBuffer.current = [];
-                            receivedSize.current = 0;
-                            writeQueue.current = [];
-                            isWriting.current = false;
-                            setProgress(0);
-                            setTransferSpeed('');
-                            setTimeRemaining('');
-                            setTransferStats(`Waiting for file save location...`);
-                            transferStartTime.current = Date.now();
-
-                            try {
-                                if (window.showSaveFilePicker) {
-                                    const handle = await window.showSaveFilePicker({ suggestedName: msg.name });
-                                    writableStream.current = await handle.createWritable();
-                                } else {
-                                    console.warn("File System Access API not supported. Falling back to RAM buffer.");
-                                    writableStream.current = null;
-                                }
-                                setTransferStats(`Receiving: ${msg.name}`);
-                                channel.send(JSON.stringify({ type: 'ready' }));
-                            } catch (err) {
-                                if (err.name === 'AbortError') {
-                                    setTransferStats('Transfer cancelled by user.');
-                                    channel.send(JSON.stringify({ type: 'cancel' }));
-                                } else {
-                                    console.error('File picker error:', err);
-                                    channel.send(JSON.stringify({ type: 'cancel' }));
-                                }
-                            }
-
+                            setIncomingFile(msg);
+                            setTransferStats(`Incoming file: ${msg.name}. Waiting for you to accept...`);
                         } else if (msg.type === 'end') {
                             if (writableStream.current) {
                                 const flushInterval = setInterval(async () => {
@@ -378,6 +351,47 @@
                 }
             };
 
+            const acceptFile = async () => {
+                try {
+                    if (window.showSaveFilePicker) {
+                        const handle = await window.showSaveFilePicker({ suggestedName: incomingFile.name });
+                        writableStream.current = await handle.createWritable();
+                    } else {
+                        console.warn("File System Access API not supported. Falling back to RAM buffer.");
+                        writableStream.current = null;
+                    }
+                    
+                    receiveBuffer.current = [];
+                    receivedSize.current = 0;
+                    writeQueue.current = [];
+                    isWriting.current = false;
+                    setProgress(0);
+                    setTransferSpeed('');
+                    setTimeRemaining('');
+                    transferStartTime.current = Date.now();
+
+                    setTransferStats(`Receiving: ${incomingFile.name}`);
+                    setIncomingFile(null);
+                    dc.current.send(JSON.stringify({ type: 'ready' }));
+                } catch (err) {
+                    if (err.name === 'AbortError') {
+                        setTransferStats('Transfer cancelled by user.');
+                        dc.current.send(JSON.stringify({ type: 'cancel' }));
+                        setIncomingFile(null);
+                    } else {
+                        console.error('File picker error:', err);
+                        dc.current.send(JSON.stringify({ type: 'cancel' }));
+                        setIncomingFile(null);
+                    }
+                }
+            };
+
+            const rejectFile = () => {
+                setTransferStats('Transfer rejected.');
+                dc.current.send(JSON.stringify({ type: 'cancel' }));
+                setIncomingFile(null);
+            };
+
             const copyToClipboard = (text) => {
                 const textArea = document.createElement("textarea");
                 textArea.value = text;
@@ -405,6 +419,7 @@
                 setTransferStats(null);
                 setTransferSpeed('');
                 setTimeRemaining('');
+                setIncomingFile(null);
             };
 
             return (
@@ -587,11 +602,23 @@
                                                 <input type="file" className="hidden" onChange={handleFileUpload} />
                                             </label>
                                         </div>
+                                    ) : incomingFile ? (
+                                        <div className="mt-6 p-6 border border-blue-500/30 bg-blue-500/10 rounded-2xl flex flex-col items-center shadow-lg">
+                                            <i className="ph ph-file-arrow-down text-4xl text-blue-400 mb-3 animate-bounce"></i>
+                                            <span className="font-medium text-center">Sender wants to share:</span>
+                                            <span className="text-xl font-bold text-white mt-1 text-center truncate w-full px-2" title={incomingFile.name}>{incomingFile.name}</span>
+                                            <span className="text-xs text-slate-400 mt-1 mb-6">{(incomingFile.size / (1024 * 1024)).toFixed(2)} MB</span>
+                                            
+                                            <div className="flex gap-3 w-full">
+                                                <button onClick={rejectFile} className="flex-1 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Decline</button>
+                                                <button onClick={acceptFile} className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 transition-colors font-medium shadow-lg shadow-blue-500/20">Accept</button>
+                                            </div>
+                                        </div>
                                     ) : (
                                         <div className="mt-6 p-8 border-2 border-dashed border-slate-600 bg-slate-900 rounded-2xl flex flex-col items-center">
-                                            <i className="ph ph-download-simple text-4xl text-slate-400 mb-3 animate-bounce"></i>
+                                            <i className="ph ph-download-simple text-4xl text-slate-400 mb-3 animate-pulse"></i>
                                             <span className="font-medium">Waiting for files...</span>
-                                            <span className="text-xs text-slate-500 mt-1">Files will prompt to download automatically</span>
+                                            <span className="text-xs text-slate-500 mt-1 text-center">When sender selects a file, you'll be prompted to accept it.</span>
                                         </div>
                                     )}
 
