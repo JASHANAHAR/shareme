@@ -38,8 +38,12 @@
             useEffect(() => {
                 const scanner = new Html5Qrcode("reader");
                 scanner.start(
-                    { facingMode: "environment" },
-                    { fps: 15 },
+                    { 
+                        facingMode: "environment",
+                        width: { ideal: 1920, min: 1280 },
+                        height: { ideal: 1080, min: 720 }
+                    },
+                    { fps: 10 },
                     (text) => {
                         scanner.stop().then(() => onScan(text)).catch(console.error);
                     },
