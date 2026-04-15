@@ -18,6 +18,11 @@
 
     <!-- Load Phosphor Icons -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <!-- Load QR Code & Scanner CDNs -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
 </head>
 
 <body class="bg-slate-900 text-white font-sans selection:bg-blue-500/30">
@@ -25,6 +30,45 @@
 
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
+
+        const encodeToken = (desc) => LZString.compressToEncodedURIComponent(JSON.stringify(desc));
+        const decodeToken = (token) => JSON.parse(LZString.decompressFromEncodedURIComponent(token));
+
+        const Scanner = ({ onScan, onCancel }) => {
+            useEffect(() => {
+                const scanner = new Html5Qrcode("reader");
+                scanner.start(
+                    { facingMode: "environment" },
+                    { fps: 10, qrbox: { width: 250, height: 250 } },
+                    (text) => {
+                        scanner.stop().then(() => onScan(text)).catch(console.error);
+                    },
+                    (err) => {}
+                ).catch((err) => {
+                    console.error("Camera error:", err);
+                    alert("Could not access camera. Ensure you are on HTTPS or localhost.");
+                });
+
+                return () => {
+                    if (scanner.isScanning) {
+                        scanner.stop().catch(console.error);
+                    }
+                };
+            }, [onScan]);
+
+            return (
+                <div className="w-full flex flex-col items-center relative">
+                    <div id="reader" className="w-full h-64 bg-black rounded-xl overflow-hidden shadow-inner flex items-center justify-center">
+                         <span className="text-slate-500 text-sm animate-pulse">Initializing Camera...</span>
+                    </div>
+                    {onCancel && (
+                        <button onClick={onCancel} className="mt-4 px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
+                            Cancel Camera
+                        </button>
+                    )}
+                </div>
+            );
+        };
 
         function App() {
             const [role, setRole] = useState(null);
@@ -39,6 +83,10 @@
             const [timeRemaining, setTimeRemaining] = useState('');
             const [incomingFile, setIncomingFile] = useState(null);
             const [queueLength, setQueueLength] = useState(0);
+
+            const [qrSrc, setQrSrc] = useState(null);
+            const [showScanner, setShowScanner] = useState(false);
+            const [manualMode, setManualMode] = useState(false);
 
             const pc = useRef(null);
             const dc = useRef(null);
@@ -103,13 +151,17 @@
                     setTimeout(resolve, 3000);
                 });
 
-                const token = btoa(JSON.stringify(pc.current.localDescription));
+                const token = encodeToken(pc.current.localDescription);
                 setLocalCode(token);
-                setStatus('Waiting for Receiver to accept...');
+                QRCode.toDataURL(token, { width: 300, margin: 2, color: { dark: '#1e293b', light: '#ffffff' } }, (err, url) => setQrSrc(url));
+                setStatus('Waiting for Receiver to scan...');
             };
 
-            const handleReceiverJoin = async () => {
+            const handleReceiverJoin = async (scannedData) => {
                 try {
+                    const inputData = typeof scannedData === 'string' ? scannedData : remoteCodeInput;
+                    if (typeof scannedData === 'string') setRemoteCodeInput(scannedData);
+                    
                     setRole('receiver');
                     setStep(1);
                     setStatus('Processing Invite Code...');
@@ -122,7 +174,7 @@
                         setupDataChannel(dc.current);
                     };
 
-                    const offer = JSON.parse(atob(remoteCodeInput));
+                    const offer = decodeToken(inputData);
                     await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
 
                     const answer = await pc.current.createAnswer();
@@ -139,10 +191,12 @@
                         setTimeout(resolve, 3000);
                     });
 
-                    const token = btoa(JSON.stringify(pc.current.localDescription));
+                    const token = encodeToken(pc.current.localDescription);
                     setLocalCode(token);
+                    QRCode.toDataURL(token, { width: 300, margin: 2, color: { dark: '#1e293b', light: '#ffffff' } }, (err, url) => setQrSrc(url));
+                    setShowScanner(false);
                     setStep(2);
-                    setStatus('Send this Accept Code back to the Sender');
+                    setStatus('Receiver connected. Sender must scan this to complete...');
 
                 } catch (e) {
                     alert("Invalid Invite Code. Please check and try again.");
@@ -151,11 +205,15 @@
                 }
             };
 
-            const handleSenderConfirm = async () => {
+            const handleSenderConfirm = async (scannedData) => {
                 try {
-                    const answer = JSON.parse(atob(remoteCodeInput));
+                    const data = typeof scannedData === 'string' ? scannedData : remoteCodeInput;
+                    if (typeof scannedData === 'string') setRemoteCodeInput(data);
+                    
+                    const answer = decodeToken(data);
                     await pc.current.setRemoteDescription(new RTCSessionDescription(answer));
                     setStatus('Connecting direct tunnel...');
+                    setShowScanner(false);
                 } catch (e) {
                     alert("Invalid Accept Code. Please check and try again.");
                 }
@@ -454,6 +512,9 @@
                 fileQueue.current = [];
                 isSending.current = false;
                 setQueueLength(0);
+                setQrSrc(null);
+                setShowScanner(false);
+                setManualMode(false);
             };
 
             return (
@@ -520,48 +581,67 @@
 
                             {role === 'receiver' && step === 0.5 && (
                                 <div className="space-y-4">
-                                    <h3 className="font-semibold text-lg">Enter Invite Code</h3>
-                                    <p className="text-sm text-slate-400">Ask the sender to give you their generated code.</p>
-                                    <textarea
-                                        className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm font-mono h-24 focus:ring-2 focus:ring-blue-500 outline-none"
-                                        placeholder="Paste code here..."
-                                        value={remoteCodeInput}
-                                        onChange={(e) => setRemoteCodeInput(e.target.value)}
-                                    />
-                                    <div className="flex gap-3">
-                                        <button onClick={reset} className="flex-1 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Back</button>
-                                        <button
-                                            onClick={handleReceiverJoin}
-                                            disabled={!remoteCodeInput}
-                                            className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors font-medium"
-                                        >
-                                            Join Tunnel
+                                    <div className="flex justify-between items-center mb-2">
+                                        <h3 className="font-semibold text-lg">Scan Sender's Screen</h3>
+                                        <button onClick={() => setManualMode(!manualMode)} className="text-xs text-blue-400 font-medium px-2 py-1 bg-blue-500/10 rounded-md">
+                                            {manualMode ? "Use Camera" : "Manual Paste"}
                                         </button>
                                     </div>
+                                    
+                                    {!manualMode ? (
+                                        <Scanner onScan={(data) => handleReceiverJoin(data)} onCancel={reset} />
+                                    ) : (
+                                        <>
+                                            <textarea
+                                                className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm font-mono h-24 focus:ring-2 focus:ring-blue-500 outline-none"
+                                                placeholder="Paste manual text code here..."
+                                                value={remoteCodeInput}
+                                                onChange={(e) => setRemoteCodeInput(e.target.value)}
+                                            />
+                                            <div className="flex gap-3">
+                                                <button onClick={reset} className="flex-1 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Back</button>
+                                                <button
+                                                    onClick={() => handleReceiverJoin()}
+                                                    disabled={!remoteCodeInput}
+                                                    className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors font-medium"
+                                                >
+                                                    Join Tunnel
+                                                </button>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             )}
 
                             {role === 'sender' && step === 1 && (
                                 <div className="space-y-6">
-                                    <div>
-                                        <h3 className="font-semibold text-lg mb-1">1. Share Invite Code</h3>
-                                        <p className="text-sm text-slate-400 mb-3">Give this code to the receiver (via SMS, Notes, etc.)</p>
+                                    <div className="flex flex-col items-center">
+                                        <div className="flex justify-between items-center w-full mb-3">
+                                            <h3 className="font-semibold text-lg">1. Receiver Scans This</h3>
+                                            <button onClick={() => setManualMode(!manualMode)} className="text-xs text-slate-400 hover:text-blue-400 transition-colors">
+                                                {manualMode ? "Show QR Code" : "Show Text"}
+                                            </button>
+                                        </div>
 
-                                        {localCode ? (
-                                            <div className="relative group">
-                                                <div className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono break-all h-20 overflow-hidden text-slate-400">
+                                        {qrSrc && !manualMode ? (
+                                            <div className="p-4 bg-white rounded-2xl w-56 h-56 flex items-center justify-center shadow-lg mx-auto">
+                                                <img src={qrSrc} alt="Invite QR" className="w-full h-full object-contain" />
+                                            </div>
+                                        ) : localCode ? (
+                                            <div className="relative w-full group">
+                                                <div className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono break-all h-32 overflow-y-auto text-slate-400">
                                                     {localCode}
                                                 </div>
                                                 <button
                                                     onClick={() => copyToClipboard(localCode)}
                                                     className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 backdrop-blur-sm transition-all flex items-center justify-center rounded-xl font-medium"
                                                 >
-                                                    {copied ? <span className="flex items-center gap-2 text-green-400"><i className="ph ph-check-circle text-xl"></i> Copied!</span> : <span className="flex items-center gap-2"><i className="ph ph-copy text-xl"></i> Copy Code</span>}
+                                                    {copied ? <span className="flex items-center gap-2 text-green-400"><i className="ph ph-check-circle text-xl"></i> Copied!</span> : <span className="flex items-center gap-2"><i className="ph ph-copy text-xl"></i> Copy</span>}
                                                 </button>
                                             </div>
                                         ) : (
-                                            <div className="h-20 flex items-center justify-center bg-slate-900 rounded-xl border border-slate-700">
-                                                <i className="ph ph-spinner text-2xl animate-spin text-blue-500"></i>
+                                            <div className="w-56 h-56 flex items-center justify-center bg-slate-900 rounded-2xl border border-slate-700 mx-auto">
+                                                <i className="ph ph-spinner text-3xl animate-spin text-blue-500"></i>
                                             </div>
                                         )}
                                     </div>
@@ -569,49 +649,71 @@
                                     <div className="h-px w-full bg-slate-700"></div>
 
                                     <div>
-                                        <h3 className="font-semibold text-lg mb-1">2. Paste Accept Code</h3>
-                                        <p className="text-sm text-slate-400 mb-3">Once they join, paste their response code here.</p>
-                                        <textarea
-                                            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm font-mono h-20 focus:ring-2 focus:ring-blue-500 outline-none mb-3"
-                                            placeholder="Paste Accept Code..."
-                                            value={remoteCodeInput}
-                                            onChange={(e) => setRemoteCodeInput(e.target.value)}
-                                        />
-                                        <div className="flex gap-3">
-                                            <button onClick={reset} className="px-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Cancel</button>
-                                            <button
-                                                onClick={handleSenderConfirm}
-                                                disabled={!remoteCodeInput}
-                                                className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors font-medium"
-                                            >
-                                                Connect
+                                        <h3 className="font-semibold text-lg mb-2">2. Final Step</h3>
+                                        
+                                        {!showScanner && !manualMode ? (
+                                            <button onClick={() => setShowScanner(true)} className="w-full py-4 rounded-xl bg-blue-600 hover:bg-blue-500 transition-colors font-medium flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20">
+                                                <i className="ph ph-camera text-xl"></i> Scan Receiver's Reply
                                             </button>
-                                        </div>
+                                        ) : showScanner ? (
+                                            <div className="w-full">
+                                                <Scanner onScan={(data) => handleSenderConfirm(data)} onCancel={() => setShowScanner(false)} />
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <textarea
+                                                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-sm font-mono h-24 focus:ring-2 focus:ring-blue-500 outline-none mb-3"
+                                                    placeholder="Paste Receiver's Accept Code..."
+                                                    value={remoteCodeInput}
+                                                    onChange={(e) => setRemoteCodeInput(e.target.value)}
+                                                />
+                                                <div className="flex gap-3">
+                                                    <button onClick={reset} className="px-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Cancel</button>
+                                                    <button
+                                                        onClick={() => handleSenderConfirm()}
+                                                        disabled={!remoteCodeInput}
+                                                        className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors font-medium"
+                                                    >
+                                                        Connect
+                                                    </button>
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             )}
 
                             {role === 'receiver' && step === 2 && (
                                 <div className="space-y-6">
-                                    <div>
-                                        <h3 className="font-semibold text-lg mb-1">Send this back</h3>
-                                        <p className="text-sm text-slate-400 mb-3">Copy this Accept Code and give it to the Sender to complete the handshake.</p>
-
-                                        <div className="relative group mb-6">
-                                            <div className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono break-all h-24 overflow-hidden text-slate-400">
-                                                {localCode}
-                                            </div>
-                                            <button
-                                                onClick={() => copyToClipboard(localCode)}
-                                                className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 backdrop-blur-sm transition-all flex items-center justify-center rounded-xl font-medium"
-                                            >
-                                                {copied ? <span className="flex items-center gap-2 text-green-400"><i className="ph ph-check-circle text-xl"></i> Copied!</span> : <span className="flex items-center gap-2"><i className="ph ph-copy text-xl"></i> Copy Code</span>}
+                                    <div className="flex flex-col items-center">
+                                        <div className="flex justify-between items-center w-full mb-3">
+                                            <h3 className="font-semibold text-lg">Let Sender Scan This</h3>
+                                            <button onClick={() => setManualMode(!manualMode)} className="text-xs text-slate-400 hover:text-blue-400 transition-colors">
+                                                {manualMode ? "Show QR Code" : "Show Text"}
                                             </button>
                                         </div>
 
-                                        <div className="flex items-center justify-center gap-3 p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-400">
+                                        {qrSrc && !manualMode ? (
+                                            <div className="p-4 bg-white rounded-2xl w-56 h-56 flex items-center justify-center shadow-lg mx-auto mb-6">
+                                                <img src={qrSrc} alt="Accept QR" className="w-full h-full object-contain" />
+                                            </div>
+                                        ) : (
+                                            <div className="relative w-full group mb-6">
+                                                <div className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs font-mono break-all h-32 overflow-y-auto text-slate-400">
+                                                    {localCode}
+                                                </div>
+                                                <button
+                                                    onClick={() => copyToClipboard(localCode)}
+                                                    className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 backdrop-blur-sm transition-all flex items-center justify-center rounded-xl font-medium"
+                                                >
+                                                    {copied ? <span className="flex items-center gap-2 text-green-400"><i className="ph ph-check-circle text-xl"></i> Copied!</span> : <span className="flex items-center gap-2"><i className="ph ph-copy text-xl"></i> Copy</span>}
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        <div className="flex items-center justify-center gap-3 w-full p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl text-blue-400">
                                             <i className="ph ph-spinner text-xl animate-spin"></i>
-                                            <span className="text-sm font-medium">Waiting for Sender to connect...</span>
+                                            <span className="text-sm font-medium">Waiting for Sender to confirm...</span>
                                         </div>
 
                                         <button onClick={reset} className="w-full mt-4 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 transition-colors font-medium">Cancel</button>
