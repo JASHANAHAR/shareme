@@ -38,6 +38,7 @@
             const [transferSpeed, setTransferSpeed] = useState('');
             const [timeRemaining, setTimeRemaining] = useState('');
             const [incomingFile, setIncomingFile] = useState(null);
+            const [queueLength, setQueueLength] = useState(0);
 
             const pc = useRef(null);
             const dc = useRef(null);
@@ -51,6 +52,9 @@
             const isWriting = useRef(false);
             const resolveReadyObj = useRef(null);
             const transferStartTime = useRef(null);
+
+            const fileQueue = useRef([]);
+            const isSending = useRef(false);
 
             const initWebRTC = () => {
                 const configuration = {
@@ -262,93 +266,120 @@
                 };
             };
 
-            const sendFile = async (file) => {
-                if (!dc.current || dc.current.readyState !== 'open') {
-                    alert('Connection is not ready.');
-                    return;
-                }
-
-                dc.current.send(JSON.stringify({
-                    type: 'meta',
-                    name: file.name,
-                    size: file.size,
-                    mime: file.type
-                }));
-
-                setTransferStats(`Waiting for receiver to choose location...`);
-                
-                const isReady = await new Promise((resolve) => {
-                    resolveReadyObj.current = resolve;
-                });
-                
-                resolveReadyObj.current = null;
-
-                if (!isReady) {
-                    setTransferStats(`Transfer was cancelled.`);
-                    return;
-                }
-
-                transferStartTime.current = Date.now();
-                setTransferStats(`Sending: ${file.name}`);
-                setTransferSpeed('');
-                setTimeRemaining('');
-                
-                const chunkSize = 16384;
-                let offset = 0;
-                fileReader.current = new FileReader();
-
-                dc.current.bufferedAmountLowThreshold = 1024 * 64;
-
-                const readNextChunk = () => {
-                    const slice = file.slice(offset, offset + chunkSize);
-                    fileReader.current.readAsArrayBuffer(slice);
-                };
-
-                fileReader.current.onload = (e) => {
-                    if (dc.current.bufferedAmount > 1024 * 1024 * 2) {
-                        dc.current.onbufferedamountlow = () => {
-                            dc.current.onbufferedamountlow = null;
-                            sendData(e.target.result);
-                        };
-                    } else {
-                        sendData(e.target.result);
+            const sendFile = (file) => {
+                return new Promise(async (resolvePromise) => {
+                    if (!dc.current || dc.current.readyState !== 'open') {
+                        alert('Connection is not ready.');
+                        resolvePromise(false);
+                        return;
                     }
-                };
 
-                const sendData = (data) => {
-                    try {
-                        dc.current.send(data);
-                        offset += data.byteLength;
-                        setProgress((offset / file.size) * 100);
-                        updateTransferStats(offset, file.size);
+                    dc.current.send(JSON.stringify({
+                        type: 'meta',
+                        name: file.name,
+                        size: file.size,
+                        mime: file.type
+                    }));
 
-                        if (offset < file.size) {
-                            readNextChunk();
+                    setTransferStats(`Waiting for receiver to choose location...`);
+                    
+                    const isReady = await new Promise((resolve) => {
+                        resolveReadyObj.current = resolve;
+                    });
+                    
+                    resolveReadyObj.current = null;
+
+                    if (!isReady) {
+                        setTransferStats(`Transfer cancelled by receiver.`);
+                        resolvePromise(false);
+                        return;
+                    }
+
+                    transferStartTime.current = Date.now();
+                    setTransferStats(`Sending: ${file.name}`);
+                    setTransferSpeed('');
+                    setTimeRemaining('');
+                    
+                    const chunkSize = 16384;
+                    let offset = 0;
+                    fileReader.current = new FileReader();
+
+                    dc.current.bufferedAmountLowThreshold = 1024 * 64;
+
+                    const readNextChunk = () => {
+                        const slice = file.slice(offset, offset + chunkSize);
+                        fileReader.current.readAsArrayBuffer(slice);
+                    };
+
+                    fileReader.current.onload = (e) => {
+                        if (dc.current.bufferedAmount > 1024 * 1024 * 2) {
+                            dc.current.onbufferedamountlow = () => {
+                                dc.current.onbufferedamountlow = null;
+                                sendData(e.target.result);
+                            };
                         } else {
-                            dc.current.send(JSON.stringify({ type: 'end' }));
-                            setTransferSpeed('');
-                            setTimeRemaining('');
-                            setTransferStats(`Sent successfully: ${file.name}`);
-                            setTimeout(() => setProgress(0), 2000);
+                            sendData(e.target.result);
                         }
-                    } catch (err) {
-                        console.error("Transfer error", err);
-                        setTransferStats("Transfer failed. Refresh and try again.");
-                    }
-                };
+                    };
 
-                readNextChunk();
+                    const sendData = (data) => {
+                        try {
+                            dc.current.send(data);
+                            offset += data.byteLength;
+                            setProgress((offset / file.size) * 100);
+                            updateTransferStats(offset, file.size);
+
+                            if (offset < file.size) {
+                                readNextChunk();
+                            } else {
+                                dc.current.send(JSON.stringify({ type: 'end' }));
+                                setTransferSpeed('');
+                                setTimeRemaining('');
+                                setTransferStats(`Sent successfully: ${file.name}`);
+                                setTimeout(() => setProgress(0), 1000);
+                                resolvePromise(true);
+                            }
+                        } catch (err) {
+                            console.error("Transfer error", err);
+                            setTransferStats("Transfer failed. Refresh and try again.");
+                            resolvePromise(false);
+                        }
+                    };
+
+                    readNextChunk();
+                });
             };
 
-            const handleFileUpload = (e) => {
-                const file = e.target.files[0];
-                if (file) {
+            const processSendQueue = async () => {
+                if (isSending.current || fileQueue.current.length === 0) return;
+                isSending.current = true;
+                
+                while (fileQueue.current.length > 0) {
+                    const file = fileQueue.current.shift();
+                    setQueueLength(fileQueue.current.length);
+                    
                     setProgress(0);
                     setTransferSpeed('');
                     setTimeRemaining('');
-                    sendFile(file);
-                    e.target.value = '';
+                    
+                    await sendFile(file);
+                    
+                    // Delay slightly to ensure UI and receiver catches up before next meta
+                    await new Promise(r => setTimeout(r, 1500));
                 }
+                
+                isSending.current = false;
+                setQueueLength(0);
+            };
+
+            const handleFileUpload = (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length > 0) {
+                    fileQueue.current.push(...files);
+                    setQueueLength(fileQueue.current.length);
+                    processSendQueue();
+                }
+                e.target.value = '';
             };
 
             const acceptFile = async () => {
@@ -420,6 +451,9 @@
                 setTransferSpeed('');
                 setTimeRemaining('');
                 setIncomingFile(null);
+                fileQueue.current = [];
+                isSending.current = false;
+                setQueueLength(0);
             };
 
             return (
@@ -595,11 +629,17 @@
 
                                     {role === 'sender' ? (
                                         <div className="mt-6">
-                                            <label className="w-full border-2 border-dashed border-slate-600 hover:border-blue-500 bg-slate-900 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors group">
+                                            <label className="w-full border-2 border-dashed border-slate-600 hover:border-blue-500 bg-slate-900 rounded-2xl p-8 flex flex-col items-center justify-center cursor-pointer transition-colors group relative overflow-hidden">
                                                 <i className="ph ph-upload-simple text-4xl text-slate-400 group-hover:text-blue-400 mb-3 transition-colors"></i>
-                                                <span className="font-medium">Select a file to send</span>
+                                                <span className="font-medium">Select file(s) to send</span>
                                                 <span className="text-xs text-slate-500 mt-1">Movies, Photos, Zips (Any size)</span>
-                                                <input type="file" className="hidden" onChange={handleFileUpload} />
+                                                <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+                                                
+                                                {queueLength > 0 && (
+                                                    <div className="absolute top-4 right-4 bg-blue-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg">
+                                                        +{queueLength} in queue
+                                                    </div>
+                                                )}
                                             </label>
                                         </div>
                                     ) : incomingFile ? (
