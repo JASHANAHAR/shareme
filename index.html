@@ -75,16 +75,24 @@
                 dc.current.binaryType = 'arraybuffer';
                 setupDataChannel(dc.current);
 
-                pc.current.onicegatheringstatechange = () => {
-                    if (pc.current.iceGatheringState === 'complete') {
-                        const token = btoa(JSON.stringify(pc.current.localDescription));
-                        setLocalCode(token);
-                        setStatus('Waiting for Receiver to accept...');
-                    }
-                };
-
                 const offer = await pc.current.createOffer();
                 await pc.current.setLocalDescription(offer);
+
+                // Wait for ICE gathering, but force it to finish after 3 seconds max
+                await new Promise((resolve) => {
+                    if (pc.current.iceGatheringState === 'complete') resolve();
+
+                    pc.current.onicecandidate = (event) => {
+                        if (event.candidate === null) resolve(); // Null candidate means it's done gathering
+                    };
+
+                    // Fallback: If network blocks STUN, just use local IP after 3 seconds
+                    setTimeout(resolve, 3000);
+                });
+
+                const token = btoa(JSON.stringify(pc.current.localDescription));
+                setLocalCode(token);
+                setStatus('Waiting for Receiver to accept...');
             };
 
             const handleReceiverJoin = async () => {
@@ -101,20 +109,28 @@
                         setupDataChannel(dc.current);
                     };
 
-                    pc.current.onicegatheringstatechange = () => {
-                        if (pc.current.iceGatheringState === 'complete') {
-                            const token = btoa(JSON.stringify(pc.current.localDescription));
-                            setLocalCode(token);
-                            setStep(2);
-                            setStatus('Send this Accept Code back to the Sender');
-                        }
-                    };
-
                     const offer = JSON.parse(atob(remoteCodeInput));
                     await pc.current.setRemoteDescription(new RTCSessionDescription(offer));
 
                     const answer = await pc.current.createAnswer();
                     await pc.current.setLocalDescription(answer);
+
+                    // Wait for ICE gathering, but force it to finish after 3 seconds max
+                    await new Promise((resolve) => {
+                        if (pc.current.iceGatheringState === 'complete') resolve();
+
+                        pc.current.onicecandidate = (event) => {
+                            if (event.candidate === null) resolve();
+                        };
+
+                        setTimeout(resolve, 3000);
+                    });
+
+                    const token = btoa(JSON.stringify(pc.current.localDescription));
+                    setLocalCode(token);
+                    setStep(2);
+                    setStatus('Send this Accept Code back to the Sender');
+
                 } catch (e) {
                     alert("Invalid Invite Code. Please check and try again.");
                     setStep(0);
