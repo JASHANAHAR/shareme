@@ -153,7 +153,15 @@
 
                 const token = encodeToken(pc.current.localDescription);
                 setLocalCode(token);
-                QRCode.toDataURL(token, { width: 300, margin: 2, color: { dark: '#1e293b', light: '#ffffff' } }, (err, url) => setQrSrc(url));
+                QRCode.toDataURL(token, { 
+                    errorCorrectionLevel: 'L',
+                    width: 400, 
+                    margin: 2, 
+                    color: { dark: '#1e293b', light: '#ffffff' } 
+                }, (err, url) => {
+                    if (err) console.error("QR Gen Error:", err);
+                    else setQrSrc(url);
+                });
                 setStatus('Waiting for Receiver to scan...');
             };
 
@@ -193,7 +201,15 @@
 
                     const token = encodeToken(pc.current.localDescription);
                     setLocalCode(token);
-                    QRCode.toDataURL(token, { width: 300, margin: 2, color: { dark: '#1e293b', light: '#ffffff' } }, (err, url) => setQrSrc(url));
+                    QRCode.toDataURL(token, { 
+                        errorCorrectionLevel: 'L',
+                        width: 400, 
+                        margin: 2, 
+                        color: { dark: '#1e293b', light: '#ffffff' } 
+                    }, (err, url) => {
+                        if (err) console.error("QR Gen Error:", err);
+                        else setQrSrc(url);
+                    });
                     setShowScanner(false);
                     setStep(2);
                     setStatus('Receiver connected. Sender must scan this to complete...');
