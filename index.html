@@ -39,7 +39,7 @@
                 const scanner = new Html5Qrcode("reader");
                 scanner.start(
                     { facingMode: "environment" },
-                    { fps: 10, qrbox: { width: 250, height: 250 } },
+                    { fps: 15 },
                     (text) => {
                         scanner.stop().then(() => onScan(text)).catch(console.error);
                     },
@@ -58,8 +58,8 @@
 
             return (
                 <div className="w-full flex flex-col items-center relative">
-                    <div id="reader" className="w-full h-64 bg-black rounded-xl overflow-hidden shadow-inner flex items-center justify-center">
-                         <span className="text-slate-500 text-sm animate-pulse">Initializing Camera...</span>
+                    <div id="reader" className="w-full bg-black rounded-xl overflow-hidden shadow-inner min-h-[300px] flex items-center justify-center border border-slate-700">
+                        <span className="text-slate-500 text-sm animate-pulse">Initializing Camera...</span>
                     </div>
                     {onCancel && (
                         <button onClick={onCancel} className="mt-4 px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
@@ -640,8 +640,8 @@
                                         </div>
 
                                         {qrSrc && !manualMode ? (
-                                            <div className="p-4 bg-white rounded-2xl w-56 h-56 flex items-center justify-center shadow-lg mx-auto">
-                                                <img src={qrSrc} alt="Invite QR" className="w-full h-full object-contain" />
+                                            <div className="p-4 bg-white rounded-3xl w-full max-w-[18rem] aspect-square flex items-center justify-center shadow-lg mx-auto">
+                                                <img src={qrSrc} alt="Invite QR" className="w-full h-full object-contain cursor-pointer" onClick={(e) => e.target.requestFullscreen && e.target.requestFullscreen()} title="Click to enlarge" />
                                             </div>
                                         ) : localCode ? (
                                             <div className="relative w-full group">
@@ -710,8 +710,8 @@
                                         </div>
 
                                         {qrSrc && !manualMode ? (
-                                            <div className="p-4 bg-white rounded-2xl w-56 h-56 flex items-center justify-center shadow-lg mx-auto mb-6">
-                                                <img src={qrSrc} alt="Accept QR" className="w-full h-full object-contain" />
+                                            <div className="p-4 bg-white rounded-3xl w-full max-w-[18rem] aspect-square flex items-center justify-center shadow-lg mx-auto mb-6">
+                                                <img src={qrSrc} alt="Accept QR" className="w-full h-full object-contain cursor-pointer" onClick={(e) => e.target.requestFullscreen && e.target.requestFullscreen()} title="Click to enlarge" />
                                             </div>
                                         ) : (
                                             <div className="relative w-full group mb-6">
