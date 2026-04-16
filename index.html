@@ -21,7 +21,7 @@
 
     <!-- Load QR Code & Scanner CDNs -->
     <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://unpkg.com/qr-scanner@1.4.2/qr-scanner.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
 </head>
 
@@ -50,34 +50,49 @@
         const decodeToken = (token) => JSON.parse(LZString.decompressFromBase64(token));
 
         const Scanner = ({ onScan, onCancel }) => {
+            const videoRef = useRef(null);
+
             useEffect(() => {
-                const scanner = new Html5Qrcode("reader", { formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE] });
-                scanner.start(
-                    { facingMode: "environment" },
-                    { 
-                        fps: 10,
-                        qrbox: { width: 250, height: 250 }
+                if (!videoRef.current) return;
+                
+                // Initialize WASM Worker Path
+                window.QrScanner.WORKER_PATH = 'https://unpkg.com/qr-scanner@1.4.2/qr-scanner-worker.min.js';
+                
+                let isScanned = false;
+                const qrScanner = new window.QrScanner(
+                    videoRef.current,
+                    result => {
+                        if (isScanned) return;
+                        isScanned = true;
+                        qrScanner.stop();
+                        qrScanner.destroy();
+                        onScan(result.data);
                     },
-                    (text) => {
-                        scanner.stop().then(() => onScan(text)).catch(console.error);
-                    },
-                    (err) => {}
-                ).catch((err) => {
+                    {
+                        highlightScanRegion: true,
+                        highlightCodeOutline: true,
+                        returnDetailedScanResult: true
+                    }
+                );
+
+                qrScanner.start().catch((err) => {
                     console.error("Camera error:", err);
                     alert("Could not access camera. Ensure you are on HTTPS or localhost.");
                 });
 
                 return () => {
-                    if (scanner.isScanning) {
-                        scanner.stop().catch(console.error);
-                    }
+                    qrScanner.stop();
+                    qrScanner.destroy();
                 };
             }, [onScan]);
 
             return (
                 <div className="w-full flex flex-col items-center relative">
-                    <div id="reader" className="w-full bg-black rounded-xl overflow-hidden shadow-inner flex items-center justify-center border border-slate-700 min-h-[300px]">
-                        <span className="text-slate-500 text-sm animate-pulse p-12">Target QR inside box...</span>
+                    <div className="w-full bg-black rounded-xl overflow-hidden shadow-inner border border-slate-700 min-h-[300px] relative">
+                        <video ref={videoRef} className="w-full h-full object-cover absolute inset-0"></video>
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <span className="text-white/30 text-sm animate-pulse bg-black/50 px-4 py-2 rounded-full backdrop-blur-sm">Scanning...</span>
+                        </div>
                     </div>
                     {onCancel && (
                         <button onClick={onCancel} className="mt-4 px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors">
